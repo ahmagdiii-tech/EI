@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum AgentVisibility {
+  PRIVATE
+  ORGANIZATION
+}
+
+enum AgentVersionStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum RunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  BLOCKED
+}
+
+enum DeploymentRequestStatus {
+  DRAFT
+  REQUESTED
+  APPROVED
+  REJECTED
+  DEPLOYED
+}
+
+model User {
+  id          String               @id @default(cuid())
+  email       String               @unique
+  name        String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  memberships OrganizationMember[]
+  auditLogs   AuditLog[]
+  events      SecurityEvent[]
+  versions    AgentVersion[]
+  createdAgents Agent[] @relation("AgentCreator")
+  runs        Run[]
+}
+
+model Organization {
+  id                 String                      @id @default(cuid())
+  name               String
+  slug               String                      @unique
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+  members            OrganizationMember[]
+  roles              Role[]
+  securityPolicies   SecurityPolicy[]
+  agents             Agent[]
+  runs               Run[]
+  auditLogs          AuditLog[]
+  securityEvents     SecurityEvent[]
+  deploymentRequests DeploymentRequest[]
+  knowledgeDocuments KnowledgeDocument[]
+}
+
+model OrganizationMember {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String
+  status         MemberStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roles          MemberRole[]
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+model Role {
+  id             String               @id @default(cuid())
+  organizationId String?
+  key            String
+  name           String
+  description    String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  organization   Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions    RolePermission[]
+  members        MemberRole[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  description String
+  createdAt   DateTime         @default(now())
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+model MemberRole {
+  id       String             @id @default(cuid())
+  memberId String
+  roleId   String
+  member   OrganizationMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  role     Role               @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, roleId])
+}
+
+model SecurityPolicy {
+  id             String       @id @default(cuid())
+  organizationId String
+  key            String
+  values         Json
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+}
+
+model AgentTemplate {
+  id                  String   @id @default(cuid())
+  key                 String   @unique
+  name                String
+  description         String
+  defaultInstructions String
+  defaultRiskLevel    RiskLevel @default(LOW)
+  defaultConfig       Json
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  agents              Agent[]
+}
+
+model Agent {
+  id                String                @id @default(cuid())
+  organizationId    String
+  templateId        String?
+  name              String
+  description       String?
+  riskLevel         RiskLevel             @default(LOW)
+  visibility        AgentVisibility       @default(PRIVATE)
+  requiresApproval  Boolean               @default(false)
+  maxCostPerRun     Decimal               @db.Decimal(10, 4)
+  maxRuntimeMs      Int
+  maxToolCalls      Int
+  activeVersionId   String?               @unique
+  createdByUserId   String
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template          AgentTemplate?        @relation(fields: [templateId], references: [id])
+  activeVersion     AgentVersion?         @relation("ActiveAgentVersion", fields: [activeVersionId], references: [id])
+  versions          AgentVersion[]        @relation("AgentVersions")
+  toolPermissions   AgentToolPermission[]
+  createdBy         User                  @relation("AgentCreator", fields: [createdByUserId], references: [id])
+  agentRuns         AgentRun[]
+  deploymentRequests DeploymentRequest[]
+
+  @@index([organizationId])
+  @@index([templateId])
+}
+
+model AgentVersion {
+  id           String             @id @default(cuid())
+  agentId      String
+  version      Int
+  name         String
+  instructions String
+  config       Json
+  status       AgentVersionStatus @default(DRAFT)
+  createdById  String
+  createdAt    DateTime           @default(now())
+  activatedAt  DateTime?
+  agent        Agent              @relation("AgentVersions", fields: [agentId], references: [id], onDelete: Cascade)
+  activeFor    Agent?             @relation("ActiveAgentVersion")
+  createdBy    User               @relation(fields: [createdById], references: [id])
+  agentRuns    AgentRun[]
+
+  @@unique([agentId, version])
+  @@index([agentId])
+}
+
+model ToolDefinition {
+  id                 String                @id @default(cuid())
+  key                String                @unique
+  name               String
+  description        String
+  inputSchema        Json
+  outputSchema       Json
+  enabled            Boolean               @default(true)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  agentPermissions   AgentToolPermission[]
+}
+
+model AgentToolPermission {
+  id               String         @id @default(cuid())
+  agentId          String
+  toolDefinitionId String
+  createdAt        DateTime       @default(now())
+  agent            Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  toolDefinition   ToolDefinition @relation(fields: [toolDefinitionId], references: [id])
+
+  @@unique([agentId, toolDefinitionId])
+  @@index([agentId])
+}
+
+model Run {
+  id             String        @id @default(cuid())
+  organizationId String
+  requestedById  String
+  input          String
+  status         RunStatus     @default(QUEUED)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requestedBy    User          @relation(fields: [requestedById], references: [id])
+  agentRuns      AgentRun[]
+  events         RunEvent[]
+  finalAnswer    FinalAnswer?
+
+  @@index([organizationId])
+  @@index([requestedById])
+}
+
+model AgentRun {
+  id             String        @id @default(cuid())
+  runId          String
+  agentId        String
+  agentVersionId String
+  status         RunStatus     @default(QUEUED)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  run            Run           @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agent          Agent         @relation(fields: [agentId], references: [id])
+  agentVersion   AgentVersion  @relation(fields: [agentVersionId], references: [id])
+
+  @@index([runId])
+  @@index([agentId])
+}
+
+model RunEvent {
+  id        String   @id @default(cuid())
+  runId     String
+  type      String
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  run       Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+}
+
+model FinalAnswer {
+  id        String   @id @default(cuid())
+  runId     String   @unique
+  content   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  run       Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id             String        @id @default(cuid())
+  organizationId String
+  actorUserId    String?
+  action         String
+  entityType     String
+  entityId       String?
+  metadata       Json?
+  createdAt      DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor          User?         @relation(fields: [actorUserId], references: [id])
+
+  @@index([organizationId])
+  @@index([actorUserId])
+}
+
+model SecurityEvent {
+  id             String        @id @default(cuid())
+  organizationId String
+  actorUserId    String?
+  type           String
+  severity       String
+  message        String
+  metadata       Json?
+  createdAt      DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor          User?         @relation(fields: [actorUserId], references: [id])
+
+  @@index([organizationId])
+  @@index([actorUserId])
+}
+
+model DeploymentRequest {
+  id             String                      @id @default(cuid())
+  organizationId String
+  agentId        String
+  requestedById  String
+  status         DeploymentRequestStatus     @default(REQUESTED)
+  notes          String?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  organization   Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agent          Agent                       @relation(fields: [agentId], references: [id])
+  requestedBy    User                        @relation(fields: [requestedById], references: [id])
+  activities     DeploymentRequestActivity[]
+
+  @@index([organizationId])
+  @@index([agentId])
+}
+
+model DeploymentRequestActivity {
+  id                  String            @id @default(cuid())
+  deploymentRequestId String
+  actorUserId         String?
+  type                String
+  message             String
+  metadata            Json?
+  createdAt           DateTime          @default(now())
+  deploymentRequest   DeploymentRequest @relation(fields: [deploymentRequestId], references: [id], onDelete: Cascade)
+
+  @@index([deploymentRequestId])
+}
+
+model KnowledgeDocument {
+  id             String       @id @default(cuid())
+  organizationId String
+  title          String
+  contentType    String
+  storageKey     String
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
